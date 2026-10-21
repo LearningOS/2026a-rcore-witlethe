@@ -1,6 +1,6 @@
 //! Process management syscalls
 use crate::{
-    task::{exit_current_and_run_next, suspend_current_and_run_next},
+    task::{exit_current_and_run_next, suspend_current_and_run_next, syscall_count},
     timer::get_time_us,
 };
 
@@ -39,7 +39,26 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 }
 
 // TODO: implement the syscall
+/// [sys_trace(0, _id, _)] return a byte of unsigned integar at [_id]
+/// [sys_trace(1, _id, _data)] write [_data] as u8 to address [_id] and return [0] on success
+/// [sys_trace(2, _id, _)] return count of calls to syscall specified by [_id]
+/// [sys_trace(_, _, _)] failed with return value [-1]
 pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
     trace!("kernel: sys_trace");
-    -1
+    match _trace_request {
+        0 => {
+            let addr = _id as *const u8;
+            let val = unsafe { addr.read() };
+            val as isize
+        }
+        1 => {
+            let addr = _id as *mut u8;
+            unsafe {
+                addr.write(_data as u8);
+            }
+            0
+        }
+        2 => isize::try_from(syscall_count(_id)).expect("syscall count exceeds isize::MAX"),
+        _ => -1,
+    }
 }
