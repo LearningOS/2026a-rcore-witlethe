@@ -31,17 +31,32 @@ mod process;
 use fs::*;
 use process::*;
 
+use crate::task::record_syscall;
+
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
-        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
-        SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_YIELD => sys_yield(),
-        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
-        SYSCALL_TRACE => sys_trace(args[0], args[1], args[2]),
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2]),
-        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
-        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
+        SYSCALL_WRITE => dispatch_with_record(syscall_id, || {
+            sys_write(args[0], args[1] as *const u8, args[2])
+        }),
+        SYSCALL_EXIT => dispatch_with_record(syscall_id, || {
+            sys_exit(args[0] as i32)
+        }),
+        SYSCALL_YIELD => dispatch_with_record(syscall_id, sys_yield),
+        SYSCALL_GET_TIME => dispatch_with_record(syscall_id, || {
+            sys_get_time(args[0] as *mut TimeVal, args[1])
+        }),
+        SYSCALL_TRACE => dispatch_with_record(syscall_id, || {
+            sys_trace(args[0], args[1], args[2])
+        }),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
+}
+
+fn dispatch_with_record<F>(syscall_id: usize, f: F) -> isize
+where
+    F: FnOnce() -> isize,
+{
+    record_syscall(syscall_id);
+    f()
 }
