@@ -49,6 +49,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_TRACE => dispatch_with_record(syscall_id, || {
             sys_trace(args[0], args[1], args[2])
         }),
+        SYSCALL_MMAP => dispatch_with_record(syscall_id, || {
+            sys_mmap(args[0], args[1], args[2])
+        }),
+        SYSCALL_MUNMAP => {
+            dispatch_with_record(syscall_id, || sys_munmap(args[0], args[1]))
+        }
+        SYSCALL_SBRK => {
+            dispatch_with_record(syscall_id, || sys_sbrk(args[0] as i32))
+        }
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
 }

@@ -185,3 +185,94 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+
+/// [translated_byte_buffer_for_write token va len] translate [len] bytes starting at user address [va] using page table [token].
+/// Return writable user buffers on success, or [None] if the range overflows, is unmapped, or lacks user-write permission.
+pub fn translated_byte_buffer_for_write(
+    token: usize,
+    va: *const u8,
+    len: usize,
+) -> Option<Vec<&'static mut [u8]>> {
+    let page_table = PageTable::from_token(token);
+
+    let mut start = va as usize;
+    let end = start.checked_add(len)?;
+
+    let mut v = Vec::new();
+
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let vpn = start_va.floor();
+
+        let pte = page_table.translate(vpn)?;
+
+        let flags = pte.flags();
+        if !flags.contains(PTEFlags::U | PTEFlags::W) {
+            return None;
+        }
+
+        let ppn = pte.ppn();
+
+        let mut next_vpn = vpn;
+        next_vpn.step();
+
+        let page_end: VirtAddr = next_vpn.into();
+        let end_va = page_end.min(VirtAddr::from(end));
+
+        let bytes = ppn.get_bytes_array();
+        let slice_end = if end_va.page_offset() == 0 {
+            bytes.len()
+        } else {
+            end_va.page_offset()
+        };
+
+        v.push(&mut bytes[start_va.page_offset()..slice_end]);
+
+        start = end_va.into();
+    }
+
+    Some(v)
+}
+
+/// [translated_byte_read token va] read one byte at user address [va] using page table [token].
+/// Return [Some(byte)] if the page is mapped and user-readable, or [None] otherwise.
+pub fn translated_byte_read(token: usize, va: *const u8) -> Option<u8> {
+    let page_table = PageTable::from_token(token);
+
+    let va = VirtAddr::from(va as usize);
+    let vpn = va.floor();
+
+    let pte = page_table.translate(vpn)?;
+
+    let flags = pte.flags();
+
+    if !flags.contains(PTEFlags::U | PTEFlags::R) {
+        return None;
+    }
+
+    let ppn = pte.ppn();
+    let byte = ppn.get_bytes_array()[va.page_offset()];
+
+    Some(byte)
+}
+
+/// [translated_byte_write token va value] write [value] to user address [va] using page table [token].
+/// Return [true] if the page is mapped and user-writable, or [false] otherwise.
+pub fn translated_byte_write(token: usize, va: *mut u8, value: u8) -> bool {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(va as usize);
+    let vpn = va.floor();
+
+    let Some(pte) = page_table.translate(vpn) else {
+        return false;
+    };
+
+    let flags = pte.flags();
+
+    if !flags.contains(PTEFlags::U | PTEFlags::W) {
+        return false;
+    }
+
+    pte.ppn().get_bytes_array()[va.page_offset()] = value;
+    true
+}

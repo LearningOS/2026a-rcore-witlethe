@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -133,6 +134,29 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// [map_current_user_memory start_vpn len permission] map a user range in the running task.
+    /// Return [true] on success, or [false] if the range is invalid or overlaps an existing mapping.
+    fn map_current_user_memory(
+        &self,
+        start_vpn: VirtPageNum,
+        len: usize,
+        permission: MapPermission,
+    ) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur]
+            .memory_set
+            .map_user_range(start_vpn, len, permission)
+    }
+
+    /// [unmap_current_user_memory start_vpn len] unmap a user range in the running task.
+    /// Return [true] on success, or [false] if the range is invalid or is not a single mapping.
+    fn unmap_current_user_memory(&self, start_vpn: VirtPageNum, len: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.unmap_user_range(start_vpn, len)
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -225,4 +249,20 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// [map_current_user_memory start_vpn len permission] map a user memory range in the current task.
+/// Return [true] on success, or [false] if the mapping is invalid or overlaps an existing mapping.
+pub fn map_current_user_memory(
+    start_vpn: VirtPageNum,
+    len: usize,
+    permission: MapPermission,
+) -> bool {
+    TASK_MANAGER.map_current_user_memory(start_vpn, len, permission)
+}
+
+/// [unmap_current_user_memory start_vpn len] unmap a user memory range in the current task.
+/// Return [true] on success, or [false] if the range is invalid or is not a single mapping.
+pub fn unmap_current_user_memory(start_vpn: VirtPageNum, len: usize) -> bool {
+    TASK_MANAGER.unmap_current_user_memory(start_vpn, len)
 }
