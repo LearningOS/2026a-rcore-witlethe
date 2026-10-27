@@ -3,7 +3,9 @@ use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
-use crate::config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE};
+use crate::config::{
+    KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
+};
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -47,6 +49,67 @@ impl MemorySet {
     /// Get the page table token
     pub fn token(&self) -> usize {
         self.page_table.token()
+    }
+
+    /// [map_user_range self start_vpn len permission] map a user range starting at [start_vpn] for [len] bytes with [permission].
+    /// Return [true] on success, or [false] if the range is invalid or already mapped.
+    pub fn map_user_range(
+        &mut self,
+        start_vpn: VirtPageNum,
+        len: usize,
+        permission: MapPermission,
+    ) -> bool {
+        if len == 0 {
+            return false;
+        }
+        let page_count = len.div_ceil(PAGE_SIZE);
+        let Some(end_vpn) = start_vpn.0.checked_add(page_count) else {
+            return false;
+        };
+        if end_vpn > 1 << 27 {
+            return false;
+        }
+        for vpn in VPNRange::new(start_vpn, VirtPageNum(end_vpn)) {
+            if self
+                .page_table
+                .translate(vpn)
+                .is_some_and(|pte| pte.is_valid())
+            {
+                return false;
+            }
+        }
+        self.push(
+            MapArea::new(
+                VirtAddr::from(start_vpn),
+                VirtAddr::from(VirtPageNum(end_vpn)),
+                MapType::Framed,
+                permission,
+            ),
+            None,
+        );
+        true
+    }
+
+    /// [unmap_user_range self start_vpn len] unmap the user range starting at [start_vpn] for [len] bytes and release its frames.
+    /// Return [true] on success, or [false] if the range is invalid or was not mapped as one range.
+    pub fn unmap_user_range(&mut self, start_vpn: VirtPageNum, len: usize) -> bool {
+        if len == 0 {
+            return false;
+        }
+        let page_count = len.div_ceil(PAGE_SIZE);
+        let Some(end_vpn) = start_vpn.0.checked_add(page_count) else {
+            return false;
+        };
+        let Some(index) = self.areas.iter().position(|area| {
+            area.map_type == MapType::Framed
+                && area.vpn_range.get_start() == start_vpn
+                && area.vpn_range.get_end() == VirtPageNum(end_vpn)
+        }) else {
+            return false;
+        };
+        let mut area = self.areas.remove(index);
+        area.unmap(&mut self.page_table);
+        true
     }
     /// Assume that no conflicts.
     pub fn insert_framed_area(
@@ -421,6 +484,13 @@ bitflags! {
         ///Accessible in U mode
         const U = 1 << 4;
     }
+}
+
+/// Return (bottom, top) of a kernel stack in kernel space.
+pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
+    let top = TRAMPOLINE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
+    let bottom = top - KERNEL_STACK_SIZE;
+    (bottom, top)
 }
 
 /// remap test in kernel space
