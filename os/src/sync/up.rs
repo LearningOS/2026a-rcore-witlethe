@@ -18,6 +18,10 @@ unsafe impl<T> Sync for UPSafeCell<T> {}
 impl<T> UPSafeCell<T> {
     /// User is responsible to guarantee that inner struct is only used in
     /// uniprocessor.
+    ///
+    /// # Safety
+    /// The caller must ensure this value is only used in a uniprocessor
+    /// environment.
     pub unsafe fn new(value: T) -> Self {
         Self {
             inner: RefCell::new(value),
