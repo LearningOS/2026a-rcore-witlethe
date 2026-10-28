@@ -2,14 +2,20 @@
 use alloc::sync::Arc;
 
 use crate::{
+    config::PAGE_SIZE,
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{
+        translated_byte_buffer_for_write, translated_refmut, translated_str,
+        MapPermission, VirtAddr,
+    },
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, TaskControlBlock,
     },
+    timer::get_time_us,
 };
 
+/// User-visible elapsed-time structure returned by `get_time`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct TimeVal {
@@ -31,13 +37,19 @@ pub fn sys_yield() -> isize {
     0
 }
 
+/// [sys_getpid ()] Return the current process identifier.
 pub fn sys_getpid() -> isize {
     trace!("kernel: sys_getpid pid:{}", current_task().unwrap().pid.0);
     current_task().unwrap().pid.0 as isize
 }
 
+/// [sys_fork ()] Fork a child process and return its PID to the parent.
+///
+/// Return zero to the child through the modified child TrapContext. This
+/// implementation returns the child PID to the parent and `0` to the child.
 pub fn sys_fork() -> isize {
     trace!("kernel:pid[{}] sys_fork", current_task().unwrap().pid.0);
+
     let current_task = current_task().unwrap();
     let new_task = current_task.fork();
     let new_pid = new_task.pid.0;
@@ -48,9 +60,12 @@ pub fn sys_fork() -> isize {
     trap_cx.x[10] = 0;
     // add new task to scheduler
     add_task(new_task);
+
     new_pid as isize
 }
 
+/// [sys_exec path] Replace the current process address space with the ELF named by [path].
+/// Return `0` on success and `-1` when the name is unknown.
 pub fn sys_exec(path: *const u8) -> isize {
     trace!("kernel:pid[{}] sys_exec", current_task().unwrap().pid.0);
     let token = current_user_token();
@@ -73,9 +88,8 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         pid
     );
     let task = current_task().unwrap();
-    // find a child process
 
-    // ---- access current PCB exclusively
+    // Find a child process while holding the current PCB lock exclusively.
     let mut inner = task.inner_exclusive_access();
     if !inner
         .children
@@ -83,11 +97,12 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         .any(|p| pid == -1 || pid as usize == p.getpid())
     {
         return -1;
-        // ---- release current PCB
     }
+
     let pair = inner.children.iter().enumerate().find(|(_, p)| {
         // ++++ temporarily access child PCB exclusively
-        p.inner_exclusive_access().is_zombie() && (pid == -1 || pid as usize == p.getpid())
+        p.inner_exclusive_access().is_zombie()
+            && (pid == -1 || pid as usize == p.getpid())
         // ++++ release child PCB
     });
     if let Some((idx, _)) = pair {
@@ -106,33 +121,106 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// [sys_get_time ts tz] Write the current time as seconds and microseconds to user address [ts].
+///
+/// [tz] is reserved and ignored. The destination may span multiple pages, so
+/// use checked address translation and copy each contiguous writable slice.
+/// Return `0` on success, or `-1` if the destination is invalid.
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    trace!("kernel:pid[{}] sys_get_time", current_task().unwrap().pid.0);
+
+    let us = get_time_us();
+    let value = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+
+    let len = core::mem::size_of::<TimeVal>();
+    let Some(buffers) = translated_byte_buffer_for_write(
+        current_user_token(),
+        ts.cast::<u8>(),
+        len,
+    ) else {
+        return -1;
+    };
+
+    let src = (&value as *const TimeVal).cast::<u8>();
+    let mut offset = 0;
+    for dst in buffers {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src.add(offset),
+                dst.as_mut_ptr(),
+                dst.len(),
+            );
+        }
+        offset += dst.len();
+    }
+
+    0
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// [sys_mmap start len prot] Map [len] bytes at user virtual address [start] with protection [prot].
+///
+/// [start] must be page-aligned and [len] nonzero. [prot] may contain only the
+/// read, write, and execute bits (`1`, `2`, `4`) and must contain at least one.
+/// The mapped range must end within the supported SV39 user address space.
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
+    trace!("kernel:pid[{}] sys_mmap", current_task().unwrap().pid.0);
+
+    if start % PAGE_SIZE != 0
+        || len == 0
+        || prot & !0x7 != 0
+        || prot & 0x7 == 0
+        || start
+            .checked_add(len)
+            .map_or(true, |end| end > (1usize << 38))
+    {
+        return -1;
+    }
+
+    let permission =
+        MapPermission::from_bits_truncate((prot << 1) as u8) | MapPermission::U;
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if inner.memory_set.map_user_range(
+        VirtAddr::from(start).floor(),
+        len,
+        permission,
+    ) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// [sys_munmap start len] Unmap a user range beginning at [start] with page-aligned length [len].
+///
+/// The range must be an exact existing framed `MapArea`; partial unmapping and
+/// unmapping a range belonging to other areas is rejected.
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    trace!("kernel:pid[{}] sys_munmap", current_task().unwrap().pid.0);
+
+    if start % PAGE_SIZE != 0
+        || len == 0
+        || len % PAGE_SIZE != 0
+        || start
+            .checked_add(len)
+            .map_or(true, |end| end > (1usize << 38))
+    {
+        return -1;
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    if inner
+        .memory_set
+        .unmap_user_range(VirtAddr::from(start).floor(), len)
+    {
+        0
+    } else {
+        -1
+    }
 }
 
 /// change data segment size
@@ -145,21 +233,49 @@ pub fn sys_sbrk(size: i32) -> isize {
     }
 }
 
-/// YOUR JOB: Implement spawn.
-/// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// [sys_spawn path] Create a child process that executes the ELF program named by [path].
+///
+/// The child is created from a fresh address space, rather than by copying the
+/// parent's address space. Return the child's PID on success, or `-1` if the
+/// application name is invalid.
+pub fn sys_spawn(path: *const u8) -> isize {
+    let current = current_task().unwrap();
+    trace!("kernel:pid[{}] sys_spawn", current.pid.0);
+
+    let name = translated_str(current_user_token(), path);
+    let Some(elf_data) = get_app_data_by_name(name.as_str()) else {
+        return -1;
+    };
+
+    let child = Arc::new(TaskControlBlock::new(elf_data));
+    let child_pid = child.pid.0;
+
+    let mut parent_inner = current.inner_exclusive_access();
+    child.inner_exclusive_access().parent = Some(Arc::downgrade(&current));
+    parent_inner.children.push(child.clone());
+    drop(parent_inner);
+
+    add_task(child);
+    child_pid as isize
 }
 
-// YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+/// [sys_set_priority prio] Set the priority of the current process.
+///
+/// Valid priorities satisfy [prio] >= 2. Return [prio] on success and `-1`
+/// when the value is outside that range.
+pub fn sys_set_priority(prio: isize) -> isize {
+    let current = current_task().unwrap();
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+        "kernel:pid[{}] sys_set_priority prio={}",
+        current.pid.0,
+        prio
     );
-    -1
+
+    if prio < 2 {
+        return -1;
+    }
+
+    let mut inner = current.inner_exclusive_access();
+    inner.priority = prio as usize;
+    prio
 }

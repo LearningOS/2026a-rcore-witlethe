@@ -68,6 +68,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Scheduling priority; the smallest valid priority is 2.
+    pub priority: usize,
+
+    /// Accumulated scheduling stride used by the stride scheduler.
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -88,9 +94,10 @@ impl TaskControlBlockInner {
 }
 
 impl TaskControlBlock {
-    /// Create a new process
+    /// [new elf_data] Create the init process from an ELF image.
     ///
-    /// At present, it is only used for the creation of initproc
+    /// The method builds an independent `MemorySet`, allocates a PID and kernel
+    /// stack, initializes scheduling state, and prepares the user TrapContext.
     pub fn new(elf_data: &[u8]) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
@@ -102,7 +109,8 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
-        // push a task context which goes to trap_return to the top of kernel stack
+
+        // Push the initial context that transfers control to trap_return.
         let task_control_block = Self {
             pid: pid_handle,
             kernel_stack,
@@ -118,10 +126,13 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         };
-        // prepare TrapContext in user space
+
+        // Prepare the TrapContext in user space.
         let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
             entry_point,
@@ -133,7 +144,10 @@ impl TaskControlBlock {
         task_control_block
     }
 
-    /// Load a new elf to replace the original application address space and start execution
+    /// [exec self elf_data] Replace the current address space with a new ELF image.
+    ///
+    /// The process retains its PID, kernel stack, scheduling state, and process
+    /// relations while its user address space and initial execution context are reset.
     pub fn exec(&self, elf_data: &[u8]) {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
@@ -146,11 +160,12 @@ impl TaskControlBlock {
         let mut inner = self.inner_exclusive_access();
         // substitute memory_set
         inner.memory_set = memory_set;
-        // update trap_cx ppn
+
+        // Update the trap context page number and address-space size.
         inner.trap_cx_ppn = trap_cx_ppn;
-        // initialize base_size
         inner.base_size = user_sp;
-        // initialize trap_cx
+
+        // Initialize the TrapContext for the newly loaded program.
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
             entry_point,
@@ -162,12 +177,16 @@ impl TaskControlBlock {
         // **** release inner automatically
     }
 
-    /// parent process fork the child process
+    /// [fork self] Create a child process by copying the current user address space.
+    ///
+    /// The child inherits the scheduling priority, heap break, and parent relation,
+    /// while receiving a new PID, kernel stack, address space, and zeroed stride.
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         // ---- access parent PCB exclusively
         let mut parent_inner = self.inner_exclusive_access();
         // copy user space(include trap context)
         let memory_set = MemorySet::from_existed_user(&parent_inner.memory_set);
+
         let trap_cx_ppn = memory_set
             .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
             .unwrap()
@@ -191,6 +210,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: parent_inner.priority,
+                    stride: 0,
                 })
             },
         });
@@ -217,9 +238,11 @@ impl TaskControlBlock {
         let heap_bottom = inner.heap_bottom;
         let old_break = inner.program_brk;
         let new_brk = inner.program_brk as isize + size as isize;
+
         if new_brk < heap_bottom as isize {
             return None;
         }
+
         let result = if size < 0 {
             inner
                 .memory_set
@@ -239,7 +262,7 @@ impl TaskControlBlock {
 }
 
 #[derive(Copy, Clone, PartialEq)]
-/// task status: UnInit, Ready, Running, Exited
+/// enum type [TaskStatus] record task's status
 pub enum TaskStatus {
     /// uninitialized
     UnInit,
