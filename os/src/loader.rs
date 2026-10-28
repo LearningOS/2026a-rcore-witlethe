@@ -3,6 +3,7 @@
 /// Get the total number of applications.
 use alloc::vec::Vec;
 use lazy_static::*;
+
 ///get app number
 pub fn get_num_app() -> usize {
     extern "C" {
@@ -10,15 +11,19 @@ pub fn get_num_app() -> usize {
     }
     unsafe { (_num_app as usize as *const usize).read_volatile() }
 }
-/// get applications data
+
+/// [get_app_data app_id] return application handler pointer of [app_id]
 pub fn get_app_data(app_id: usize) -> &'static [u8] {
     extern "C" {
         fn _num_app();
     }
+
     let num_app_ptr = _num_app as usize as *const usize;
     let num_app = get_num_app();
-    let app_start = unsafe { core::slice::from_raw_parts(num_app_ptr.add(1), num_app + 1) };
     assert!(app_id < num_app);
+
+    let app_start =
+        unsafe { core::slice::from_raw_parts(num_app_ptr.add(1), num_app + 1) };
     unsafe {
         core::slice::from_raw_parts(
             app_start[app_id] as *const u8,
@@ -53,13 +58,16 @@ lazy_static! {
 }
 
 #[allow(unused)]
-///get app data from name
+/// [get_app_data_by_name name] is a wrap of [get_app_data]
+/// which return application handler pointer of [name]
+/// return None on no such applicaiton of [name]
 pub fn get_app_data_by_name(name: &str) -> Option<&'static [u8]> {
     let num_app = get_num_app();
     (0..num_app)
         .find(|&i| APP_NAMES[i] == name)
         .map(get_app_data)
 }
+
 ///list all apps
 pub fn list_apps() {
     println!("/**** APPS ****");

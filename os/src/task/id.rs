@@ -21,6 +21,7 @@ impl RecycleAllocator {
             recycled: Vec::new(),
         }
     }
+
     pub fn alloc(&mut self) -> usize {
         if let Some(id) = self.recycled.pop() {
             id
@@ -29,6 +30,7 @@ impl RecycleAllocator {
             self.current - 1
         }
     }
+
     pub fn dealloc(&mut self, id: usize) {
         assert!(id < self.current);
         assert!(
@@ -47,7 +49,8 @@ lazy_static! {
         unsafe { UPSafeCell::new(RecycleAllocator::new()) };
 }
 
-/// Abstract structure of PID
+/// [PidHanlder] stands for structure of PID
+/// which is a wrapper of [usize]
 pub struct PidHandle(pub usize);
 
 impl Drop for PidHandle {
@@ -72,15 +75,18 @@ pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
 /// Kernel stack for a process(task)
 pub struct KernelStack(pub usize);
 
-/// allocate a new kernel stack
+/// [kstack_alloc] alloc a kernel stack in kernel address space for a process
+/// return allocated stack of type [KernelStack]
 pub fn kstack_alloc() -> KernelStack {
     let kstack_id = KSTACK_ALLOCATOR.exclusive_access().alloc();
     let (kstack_bottom, kstack_top) = kernel_stack_position(kstack_id);
+
     KERNEL_SPACE.exclusive_access().insert_framed_area(
         kstack_bottom.into(),
         kstack_top.into(),
         MapPermission::R | MapPermission::W,
     );
+
     KernelStack(kstack_id)
 }
 
@@ -109,6 +115,7 @@ impl KernelStack {
         }
         ptr_mut
     }
+
     /// Get the top of the KernelStack
     pub fn get_top(&self) -> usize {
         let (_, kernel_stack_top) = kernel_stack_position(self.0);

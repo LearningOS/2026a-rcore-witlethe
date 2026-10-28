@@ -1,5 +1,8 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{
+    frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr,
+    VirtPageNum,
+};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -96,7 +99,10 @@ impl PageTable {
         }
     }
     /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
-    fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+    fn find_pte_create(
+        &mut self,
+        vpn: VirtPageNum,
+    ) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
         let mut result: Option<&mut PageTableEntry> = None;
@@ -175,7 +181,11 @@ impl Default for PageTable {
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
-pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+pub fn translated_byte_buffer(
+    token: usize,
+    ptr: *const u8,
+    len: usize,
+) -> Vec<&'static mut [u8]> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;
     let end = start + len;
@@ -190,7 +200,10 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         if end_va.page_offset() == 0 {
             v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
         } else {
-            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+            v.push(
+                &mut ppn.get_bytes_array()
+                    [start_va.page_offset()..end_va.page_offset()],
+            );
         }
         start = end_va.into();
     }

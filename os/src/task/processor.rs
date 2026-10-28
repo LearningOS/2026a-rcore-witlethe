@@ -22,7 +22,7 @@ pub struct Processor {
 }
 
 impl Processor {
-    ///Create an empty Processor
+    /// [new ()] Create an empty processor with its idle task context initialized.
     pub fn new() -> Self {
         Self {
             current: None,
@@ -30,17 +30,17 @@ impl Processor {
         }
     }
 
-    ///Get mutable reference to `idle_task_cx`
+    /// [get_idle_task_cx_ptr self] Return a mutable pointer to the idle task context.
     fn get_idle_task_cx_ptr(&mut self) -> *mut TaskContext {
         &mut self.idle_task_cx as *mut _
     }
 
-    ///Get current task in moving semanteme
+    /// [take_current self] Take the current task, replacing it with `None`.
     pub fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
         self.current.take()
     }
 
-    ///Get current task in cloning semanteme
+    /// [current self] Clone the current task handle, if a task is running.
     pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
         self.current.as_ref().map(Arc::clone)
     }
@@ -53,26 +53,34 @@ impl Default for Processor {
 }
 
 lazy_static! {
-    pub static ref PROCESSOR: UPSafeCell<Processor> = unsafe { UPSafeCell::new(Processor::new()) };
+    pub static ref PROCESSOR: UPSafeCell<Processor> =
+        unsafe { UPSafeCell::new(Processor::new()) };
 }
 
-///The main part of process execution and scheduling
-///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
+/// [run_tasks ()] Run the scheduling loop and switch to each runnable task.
+///
+/// It fetches a runnable task, marks it running, releases the processor and
+/// task locks, and transfers control through `__switch`.
 pub fn run_tasks() {
     loop {
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-            // access coming task TCB exclusively
+
+            // Access the incoming task TCB exclusively.
+
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
-            // release coming task_inner manually
+
+            // Release the incoming task TCB before retaining its Arc handle.
             drop(task_inner);
-            // release coming task TCB manually
+
             processor.current = Some(task);
-            // release processor manually
+
+            // Release the processor lock before the low-level context switch.
             drop(processor);
+
             unsafe {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }

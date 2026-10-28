@@ -33,7 +33,8 @@ impl KernelStack {
         self.data.as_ptr() as usize + KERNEL_STACK_SIZE
     }
     pub fn push_context(&self, cx: TrapContext) -> &'static mut TrapContext {
-        let cx_ptr = (self.get_sp() - core::mem::size_of::<TrapContext>()) as *mut TrapContext;
+        let cx_ptr = (self.get_sp() - core::mem::size_of::<TrapContext>())
+            as *mut TrapContext;
         unsafe {
             *cx_ptr = cx;
         }
@@ -74,12 +75,19 @@ impl AppManager {
         }
         println!("[kernel] Loading app_{}", app_id);
         // clear app area
-        core::slice::from_raw_parts_mut(APP_BASE_ADDRESS as *mut u8, APP_SIZE_LIMIT).fill(0);
+        core::slice::from_raw_parts_mut(
+            APP_BASE_ADDRESS as *mut u8,
+            APP_SIZE_LIMIT,
+        )
+        .fill(0);
         let app_src = core::slice::from_raw_parts(
             self.app_start[app_id] as *const u8,
             self.app_start[app_id + 1] - self.app_start[app_id],
         );
-        let app_dst = core::slice::from_raw_parts_mut(APP_BASE_ADDRESS as *mut u8, app_src.len());
+        let app_dst = core::slice::from_raw_parts_mut(
+            APP_BASE_ADDRESS as *mut u8,
+            app_src.len(),
+        );
         app_dst.copy_from_slice(app_src);
         // Memory fence about fetching the instruction memory
         // It is guaranteed that a subsequent instruction fetch must

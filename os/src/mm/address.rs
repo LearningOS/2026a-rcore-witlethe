@@ -179,7 +179,9 @@ impl PhysPageNum {
     /// Get the reference of page table(array of ptes)
     pub fn get_pte_array(&self) -> &'static mut [PageTableEntry] {
         let pa: PhysAddr = (*self).into();
-        unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut PageTableEntry, 512) }
+        unsafe {
+            core::slice::from_raw_parts_mut(pa.0 as *mut PageTableEntry, 512)
+        }
     }
     /// Get the reference of page(array of bytes)
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
