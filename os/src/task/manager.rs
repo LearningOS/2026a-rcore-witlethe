@@ -35,7 +35,8 @@ impl TaskManager {
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
         self.ready_queue.push_back(task);
     }
-    /// Take the runnable process with the smallest stride out of the ready queue.
+
+    /// [fetch ()] Take the runnable process with the smallest stride out of the ready queue.
     ///
     /// After selecting a process, advance its stride by
     /// `BIG_STRIDE / priority`. Wrapping addition makes stride values robust to

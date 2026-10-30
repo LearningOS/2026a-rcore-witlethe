@@ -235,9 +235,8 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// [sys_spawn path] Create a child process that executes the ELF program named by [path].
 ///
-/// The child is created from a fresh address space, rather than by copying the
-/// parent's address space. Return the child's PID on success, or `-1` if the
-/// application name is invalid.
+/// The child is created from a fresh address space, rather than by copying the parent's address space.
+/// Return the child's PID on success, or `-1` if the application name is invalid.
 pub fn sys_spawn(path: *const u8) -> isize {
     let current = current_task().unwrap();
     trace!("kernel:pid[{}] sys_spawn", current.pid.0);
@@ -254,8 +253,8 @@ pub fn sys_spawn(path: *const u8) -> isize {
     child.inner_exclusive_access().parent = Some(Arc::downgrade(&current));
     parent_inner.children.push(child.clone());
     drop(parent_inner);
-
     add_task(child);
+
     child_pid as isize
 }
 
